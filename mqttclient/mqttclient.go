@@ -1,21 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
-	//"github.com/gogo/protobuf/proto"
-	//"github.com/golang/snappy"
-	//"github.com/prometheus/prometheus/prompb"
-	"context"
 	"github.com/castai/promwrite"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"time"
 )
 
 type dht11 struct {
@@ -23,10 +21,12 @@ type dht11 struct {
 	Shidu float32 `json:"shidu"`
 }
 
-var promclient *promwrite.Client
-var ctx context.Context
-var cancel context.CancelFunc
-var mqclient mqtt.Client
+var (
+	promclient *promwrite.Client
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mqclient   mqtt.Client
+)
 
 func send2prometheus(data []byte) {
 	tmp := dht11{}
@@ -63,6 +63,7 @@ func send2prometheus(data []byte) {
 			},
 		},
 	}
+
 	fmt.Printf("start to write\n")
 	_, err := promclient.Write(ctx, req, promwrite.WriteHeaders(map[string]string{"Authorization": "abcdefxxx"}))
 	if err != nil {
@@ -88,34 +89,30 @@ func subCallBackFunc(client mqtt.Client, msg mqtt.Message) {
 
 func subscribe() {
 	mqclient.Subscribe("xapi/home/update", 0x00, subCallBackFunc)
-	fmt.Printf("send2prometheus\n")
-	//send2prometheus()
 }
-func initclient() {
-	//init prometheus clienttop
+
+func initClient() {
 	promclient = promwrite.NewClient(
 		"https://io.telemetrytower.com/api/v1/push",
-		//"http://1.13.171.8:8004/api/v1/push",
 		promwrite.HttpClient(&http.Client{
-			//Timeout: 5 * time.Second,
-			/*Transport: &customTestHttpClientTransport{
-				reqChan: sentRequest,
-				next:    http.DefaultTransport,
-			},*/
+			Timeout: 30 * time.Second,
 		}),
 	)
 
 	// init mqtt client
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker("tcp://1.13.171.8:1883")
-	opts.SetUsername("d")
-	opts.SetPassword("123456")
+
+	// update for your emqx account
+	opts.AddBroker("emqx.broker.host")
+	opts.SetUsername("emqx.user.name")
+	opts.SetPassword("emqx.user.password")
 
 	mqclient = mqtt.NewClient(opts)
 	if token := mqclient.Connect(); token.Wait() && token.Error() != nil {
-		fmt.Println("订阅 MQTT 失败")
+		log.Panic("订阅 MQTT 失败")
 	}
 }
+
 func marshtest() {
 	for i := 0; i < 100; i++ {
 		jsonStr := `
@@ -126,18 +123,17 @@ func marshtest() {
 		send2prometheus([]byte(jsonStr))
 		time.Sleep(5 * time.Second)
 	}
-
 }
+
 func main() {
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
-	// init prometheus client
-	initclient()
-	subscribe()
-	// marshtest
-	//marshtest()
 
-	done := make(chan struct{})
+	initClient()
+	subscribe()
+
+	// go marshtest()
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGKILL, syscall.SIGALRM, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGTERM, syscall.SIGINT)
 
@@ -148,9 +144,8 @@ func main() {
 		select {
 		case sgName := <-ch:
 			fmt.Printf("receive kill signal [%v], ready to exit ...", sgName)
-		case <-done:
-			fmt.Printf("close by api")
 		}
+
 		// resource release and other deals
 		mqclient.Disconnect(5)
 		defer w.Done()
